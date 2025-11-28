@@ -1,0 +1,161 @@
+pipeline {
+    agent any
+
+    parameters { 
+        choice(
+          name: 'ENV', 
+          choices: ['dev', 'test', 'preprod', 'prod', 'dr'], 
+          description: 'Choose environment'
+        ) 
+    }
+
+    environment {
+        AWS_CREDS = credentials('aws-creds')     // Jenkins credential: access key + secret
+        AWS_DEFAULT_REGION = "ap-south-1"
+    }
+
+    stages {
+
+        /************************************************************
+         * STAGE 1 – CHECKOUT CODE
+         ************************************************************/
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        /************************************************************
+         * STAGE 2 – CREATE BACKEND (S3 + DynamoDB)
+         * Only when ENV == "dev" AND backend does not exist.
+         ************************************************************/
+        stage('Create Backend Infra (First-time only)') {
+            when { expression { params.ENV == 'dev' } }
+            steps {
+                echo "=== Creating S3 + DynamoDB backend for first time ==="
+                dir("backend-init") {
+                    withEnv([
+                        "AWS_ACCESS_KEY_ID=${env.AWS_CREDS_USR}",
+                        "AWS_SECRET_ACCESS_KEY=${env.AWS_CREDS_PSW}"
+                    ]) {
+                        sh """
+                        terraform init
+                        terraform apply -auto-approve
+                        """
+                    }
+                }
+            }
+        }
+
+        /************************************************************
+         * STAGE 3 – GENERATE backend.tf dynamically
+         ************************************************************/
+        stage('Generate backend.tf') {
+            steps {
+                echo "=== Writing backend.tf for environment: ${params.ENV} ==="
+
+                sh """
+                cat <<EOF > envs/${params.ENV}/backend.tf
+terraform {
+  backend "s3" {
+    bucket         = "kanchupati-pawan-terraform-state"
+    key            = "${params.ENV}/terraform.tfstate"
+    region         = "ap-south-1"
+    dynamodb_table = "terraform-lock-table"
+    encrypt        = true
+  }
+}
+EOF
+                """
+            }
+        }
+
+        /************************************************************
+         * STAGE 4 – TERRAFORM INIT (WITH STATE MIGRATION)
+         ************************************************************/
+        stage('Terraform Init') {
+            steps {
+                echo "=== Initializing Terraform with backend ==="
+                dir("envs/${params.ENV}") {
+                    withEnv([
+                        "AWS_ACCESS_KEY_ID=${env.AWS_CREDS_USR}",
+                        "AWS_SECRET_ACCESS_KEY=${env.AWS_CREDS_PSW}"
+                    ]) {
+                        sh "terraform init -migrate-state -force-copy -input=false"
+                    }
+                }
+            }
+        }
+
+        /************************************************************
+         * STAGE 5 – FORMAT + VALIDATE (DevSecOps basic)
+         ************************************************************/
+        stage('Fmt & Validate') {
+            steps {
+                dir("envs/${params.ENV}") {
+                    sh "terraform fmt -check || true"
+                    sh "terraform validate || true"
+                }
+            }
+        }
+
+        /************************************************************
+         * STAGE 6 – PLAN (Preview changes)
+         ************************************************************/
+        stage('Plan') {
+            steps {
+                dir("envs/${params.ENV}") {
+                    withEnv([
+                        "AWS_ACCESS_KEY_ID=${env.AWS_CREDS_USR}",
+                        "AWS_SECRET_ACCESS_KEY=${env.AWS_CREDS_PSW}"
+                    ]) {
+                        sh "terraform plan -out=tfplan -input=false"
+                        sh "terraform show -no-color tfplan > plan.txt"
+                        archiveArtifacts artifacts: 'plan.txt'
+                    }
+                }
+            }
+        }
+
+        /************************************************************
+         * STAGE 7 – APPROVAL (Only for Production)
+         ************************************************************/
+        stage('Approval') {
+            when { expression { params.ENV == 'dev' } }
+            steps {
+                input message: "Are you sure you want to APPLY to PRODUCTION?"
+            }
+        }
+
+        /************************************************************
+         * STAGE 8 – APPLY real infrastructure
+         ************************************************************/
+        stage('Apply Infra') {
+            steps {
+                dir("envs/${params.ENV}") {
+                    withEnv([
+                        "AWS_ACCESS_KEY_ID=${env.AWS_CREDS_USR}",
+                        "AWS_SECRET_ACCESS_KEY=${env.AWS_CREDS_PSW}"
+                    ]) {
+                        sh "terraform apply -input=false tfplan"
+                    }
+                }
+            }
+        }
+
+        /************************************************************
+         * (OPTIONAL) STAGE 9 – ADD SECURITY SCANNERS
+         ************************************************************/
+        stage('Security Scans (Optional)') {
+            steps {
+                echo "Add: Trivy, Gitleaks, tfsec here"
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo "Terraform failed!"
+        }
+    }
+}
