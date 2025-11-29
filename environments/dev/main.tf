@@ -38,7 +38,7 @@ module "iam" {
 module "eks" {
   source = "../../modules/eks"
 
-  cluster_name     = "devopsshack-cluster-dev"
+  cluster_name     = "aws-jenkins-infra-cluster-dev"
   subnet_ids       = module.vpc.subnet_ids
   cluster_role_arn = module.iam.cluster_role_arn
 }
