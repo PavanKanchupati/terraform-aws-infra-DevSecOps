@@ -71,7 +71,7 @@ module "nodegroup" {
   cluster_name  = module.eks.cluster_name
   node_role_arn = module.iam.node_role_arn
   subnet_ids    = module.vpc.subnet_ids
-  ssh_key_name  = "DevSecOps"
+  ssh_key_name  = var.ssh_key_name
 
   desired_size = 2
   min_size     = 1
@@ -108,6 +108,3 @@ module "ebs_storage" {
   default            = true
 }
 
-variable "ssh_key_name" {
-  type = string
-}
