@@ -41,7 +41,12 @@ module "eks" {
   cluster_name     = "aws-jenkins-infra-cluster-dev"
   subnet_ids       = module.vpc.subnet_ids
   cluster_role_arn = module.iam.cluster_role_arn
+
+  security_group_ids = [
+    module.security_groups.cluster_sg_id
+  ]
 }
+
 
 ############################################
 # 6. IAM-IRSA (OIDC + EBS CSI driver role)
